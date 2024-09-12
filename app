@@ -5,7 +5,7 @@ from aiogram.utils import executor
 from datetime import datetime
 import asyncio
 
-API_TOKEN = 'ключ'
+API_TOKEN = '-'
 
 logging.basicConfig(level=logging.INFO)
 
@@ -65,28 +65,40 @@ async def process_captcha(callback_query: types.CallbackQuery):
         captcha_data = user_data[user_id]
         if captcha_data.get('captcha'):
             if (datetime.now() - captcha_data['time']).total_seconds() <= CAPTCHA_TIMEOUT:
-                if callback_query.data == '🍎':  # Проверяем, выбрано ли яблоко
-                    await bot.answer_callback_query(callback_query.id, text="Вы успешно прошли капчу!")
-                    chat_id = captcha_data['chat_id']
-                    await bot.delete_message(chat_id, captcha_data['message_id'])  # Удаляем сообщение с капчей
+                # Проверяем, что нажатая капча соответствует текущему пользователю
+                if callback_query.message.message_id == captcha_data['message_id']:
+                    if callback_query.data == '🍎':  # Проверяем, выбрано ли яблоко
+                        await bot.answer_callback_query(callback_query.id, text="Вы успешно прошли капчу!")
+                        chat_id = captcha_data['chat_id']
+                        try:
+                            await bot.delete_message(chat_id, captcha_data['message_id'])  # Удаляем сообщение с капчей
+                        except Exception as e:
+                            logging.warning(f"Ошибка при удалении сообщения с капчей: {e}")
 
-                    # Отправляем приветственное сообщение
-                    welcome_message = await bot.send_message(chat_id, f"Привет, {callback_query.from_user.full_name}! Добро пожаловать в группу!")
-                    await asyncio.sleep(30)  # Ждем 30 секунд
-                    await bot.delete_message(chat_id, welcome_message.message_id)  # Удаляем приветственное сообщение
+                        # Отправляем приветственное сообщение
+                        welcome_message = await bot.send_message(chat_id, f"Привет, {callback_query.from_user.full_name}! Добро пожаловать в группу!")
+                        await asyncio.sleep(30)  # Ждем 30 секунд
+                        await bot.delete_message(chat_id, welcome_message.message_id)  # Удаляем приветственное сообщение
 
-                    # Удаляем данные о пользователе после прохождения капчи
-                    del user_data[user_id]
+                        # Удаляем данные о пользователе после прохождения капчи
+                        del user_data[user_id]
+                    else:
+                        await bot.answer_callback_query(callback_query.id, text="Неверный ответ. Вы были забанены.")
+                        chat_id = captcha_data['chat_id']
+                        try:
+                            await bot.ban_chat_member(chat_id, user_id)
+                        except Exception as e:
+                            logging.error(f"Ошибка при бане пользователя {user_id}: {e}")
+
+                        # Удаляем сообщение с капчей, только если оно еще существует
+                        try:
+                            await bot.delete_message(chat_id, captcha_data['message_id'])
+                        except Exception as e:
+                            logging.warning(f"Ошибка при удалении сообщения с капчей: {e}")
+
+                        del user_data[user_id]  # Удаляем данные о пользователе
                 else:
-                    await bot.answer_callback_query(callback_query.id, text="Неверный ответ. Вы были забанены.")
-                    chat_id = captcha_data['chat_id']
-                    try:
-                        await bot.ban_chat_member(chat_id, user_id)
-                    except Exception as e:
-                        logging.error(f"Ошибка при бане пользователя {user_id}: {e}")
-
-                    await bot.delete_message(chat_id, captcha_data['message_id'])
-                    del user_data[user_id]  # Удаляем данные о пользователе
+                    await bot.answer_callback_query(callback_query.id, text="Вы не можете проходить эту капчу.")
             else:
                 await bot.answer_callback_query(callback_query.id, text="Время на ответ истекло.")
                 chat_id = captcha_data['chat_id']
@@ -94,7 +106,11 @@ async def process_captcha(callback_query: types.CallbackQuery):
                     await bot.ban_chat_member(chat_id, user_id)
                 except Exception as e:
                     logging.error(f"Ошибка при бане пользователя {user_id}: {e}")
-                await bot.delete_message(chat_id, captcha_data['message_id'])
+                # Удаляем сообщение с капчей, только если оно еще существует
+                try:
+                    await bot.delete_message(chat_id, captcha_data['message_id'])
+                except Exception as e:
+                    logging.warning(f"Ошибка при удалении сообщения с капчей: {e}")
                 del user_data[user_id]
         else:
             await bot.answer_callback_query(callback_query.id, text="Вы не видели капчу.")
@@ -145,7 +161,10 @@ async def check_timeouts():
                     except Exception as e:
                         logging.error(f"Ошибка при бане пользователя {user_id}: {e}")
                 if 'message_id' in data:
-                    await bot.delete_message(chat_id, data['message_id'])
+                    try:
+                        await bot.delete_message(chat_id, data['message_id'])
+                    except Exception as e:
+                        logging.warning(f"Ошибка при удалении сообщения с капчей: {e}")
                 del user_data[user_id]
         await asyncio.sleep(60)
 
