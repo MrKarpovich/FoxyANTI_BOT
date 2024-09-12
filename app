@@ -5,7 +5,7 @@ from aiogram.utils import executor
 from datetime import datetime
 import asyncio
 
-API_TOKEN = 'Здесь ключ'
+API_TOKEN = 'ключ'
 
 logging.basicConfig(level=logging.INFO)
 
@@ -124,6 +124,14 @@ async def chat_title_changed(message: types.Message):
         await bot.delete_message(message.chat.id, message.message_id)
     except Exception as e:
         logging.error(f"Ошибка при удалении сообщения о смене названия: {e}")
+
+@dp.message_handler(content_types=types.ContentTypes.NEW_CHAT_MEMBERS)
+async def handle_invite_link(message: types.Message):
+    # Удаляем сообщения о том, кто присоединился по приглашению
+    try:
+        await bot.delete_message(message.chat.id, message.message_id)
+    except Exception as e:
+        logging.error(f"Ошибка при удалении сообщения о присоединении: {e}")
 
 async def check_timeouts():
     while True:
