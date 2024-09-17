@@ -4,6 +4,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils import executor
 from datetime import datetime
 import asyncio
+import time
 
 API_TOKEN = '-'
 
@@ -36,6 +37,11 @@ emoji_buttons = {
 async def new_member(message: types.Message):
     chat_id = message.chat.id
     for new_member in message.new_chat_members:
+        if new_member.id == bot.id:
+            # Бот отправляет сообщение с просьбой дать ему права администратора
+            await message.answer(
+                "Привет! Для корректной работы мне нужны права администратора. Пожалуйста, предоставьте их.")
+            continue  # Игнорируем сам капчу для самого бота
         user_id = new_member.id
         user_mention = f"[{new_member.full_name}](tg://user?id={user_id})"
 
@@ -49,7 +55,7 @@ async def new_member(message: types.Message):
         try:
             captcha_message = await bot.send_message(
                 chat_id,
-                f"Пользователь {user_mention}, выбери самое полезное из перечисленного: (У вас 120 сек или будет бан)",
+                f"Пользователь {user_mention}, выбери самое полезное из перечисленного: \n(У вас 120 сек или будет бан)",
                 reply_markup=keyboard,
                 parse_mode=types.ParseMode.MARKDOWN
             )
@@ -169,6 +175,10 @@ async def check_timeouts():
         await asyncio.sleep(60)
 
 if __name__ == '__main__':
-    loop = asyncio.get_event_loop()
-    loop.create_task(check_timeouts())
-    executor.start_polling(dp, skip_updates=True)
+    try:
+        loop = asyncio.get_event_loop()
+        loop.create_task(check_timeouts())
+        executor.start_polling(dp, skip_updates=True)
+    except Exception as e:
+        logging.error(f"Ошибка при запуске бота: {e}")
+        time.sleep(5)
