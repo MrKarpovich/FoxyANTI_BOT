@@ -1,0 +1,172 @@
+import logging
+import random
+import sqlite3
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+from aiogram.utils import executor
+from datetime import datetime
+import asyncio
+
+API_TOKEN = '6892031210:AAHhAMV_NEGM4CbvnwuO-vLBOKrCHACUs50'
+
+logging.basicConfig(level=logging.INFO)
+
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher(bot)
+
+CAPTCHA_TIMEOUT = 120  # Время на решение капчи (в секундах)
+user_data = {}  # Хранение данных о капче для каждого пользователя
+emoji_buttons = {
+    '🍎': 'Яблоко',
+    '🍕': 'Пицца',
+    '🍔': 'Гамбургер',
+    '🍟': 'Картошка фри',
+    '🌭': 'Хот-дог',
+    '🍿': 'Попкорн',
+    '🍩': 'Пончик',
+    '🍪': 'Печенье',
+    '🍫': 'Шоколад',
+    '🍭': 'Леденец',
+    '🥤': 'Кола',
+    '🥨': 'Соленые палочки',
+}
+
+# Инициализация базы данных
+def init_db():
+    conn = sqlite3.connect('group_members.db')
+    cursor = conn.cursor()
+
+    # Создаем таблицу только если ее нет
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS group_members (
+            group_id INTEGER,
+            user_id INTEGER,
+            PRIMARY KEY (group_id, user_id)
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+# Добавление пользователя в базу данных
+def add_user_to_db(group_id, user_id):
+    conn = sqlite3.connect('group_members.db')
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        INSERT OR IGNORE INTO group_members (group_id, user_id)
+        VALUES (?, ?)
+    ''', (group_id, user_id))
+
+    conn.commit()
+    conn.close()
+
+# Проверка, находится ли пользователь в базе данных
+def is_user_in_db(group_id, user_id):
+    conn = sqlite3.connect('group_members.db')
+    cursor = conn.cursor()
+
+    cursor.execute('''
+        SELECT * FROM group_members WHERE group_id = ? AND user_id = ?
+    ''', (group_id, user_id))
+
+    result = cursor.fetchone()
+    conn.close()
+
+    return result is not None
+
+# Функция для перемешивания кнопок
+def get_random_keyboard():
+    keyboard = InlineKeyboardMarkup(row_width=3)
+    buttons = [InlineKeyboardButton(text=emoji, callback_data=emoji) for emoji in emoji_buttons.keys()]
+    random.shuffle(buttons)
+    keyboard.add(*buttons)
+    return keyboard
+
+# Обработка новых участников
+@dp.message_handler(content_types=types.ContentTypes.NEW_CHAT_MEMBERS)
+async def new_member(message: types.Message):
+    chat_id = message.chat.id
+    chat_title = message.chat.title if message.chat.title else "Название не указано"
+    current_time = datetime.now().strftime("%d.%m.%Y %H:%M")
+
+    logging.info(
+        f"Чат: {chat_title}, Время: {current_time}, Новый участник в группе: {message.new_chat_members}, (ID чата: {chat_id})"
+    )
+
+    for new_member in message.new_chat_members:
+        if new_member.id == bot.id:
+            await message.reply("Дайте мне права администратора!")
+            continue
+
+        user_id = new_member.id
+        user_mention = f"[{new_member.full_name}](tg://user?id={user_id})"
+
+        # Проверка, есть ли пользователь в базе данных
+        if is_user_in_db(chat_id, user_id):
+            logging.info(f"Пользователь {user_mention} уже находится в базе данных.")
+            continue
+
+        keyboard = get_random_keyboard()
+
+        try:
+            captcha_message = await bot.send_message(
+                chat_id,
+                f"Пользователь {user_mention}, выбери самое полезное из перечисленного: \n(У вас 120 сек или будет бан)",
+                reply_markup=keyboard,
+                parse_mode=types.ParseMode.MARKDOWN
+            )
+
+            # Сохраняем данные о капче для данного пользователя
+            user_data[user_id] = {'captcha_message_id': captcha_message.message_id, 'chat_id': chat_id}
+
+            # Фоновая задача для бана по истечении времени
+            await asyncio.sleep(CAPTCHA_TIMEOUT)
+            if user_id in user_data:
+                await bot.ban_chat_member(chat_id, user_id)
+                await bot.delete_message(chat_id, captcha_message.message_id)
+                del user_data[user_id]
+        except Exception as e:
+            logging.error(f"Ошибка при отправке капчи для пользователя {user_id}: {e}")
+
+# Обработка ответа на капчу
+@dp.callback_query_handler(lambda c: c.data in emoji_buttons.keys())
+async def process_captcha(callback_query: types.CallbackQuery):
+    user_id = callback_query.from_user.id
+    chat_id = callback_query.message.chat.id
+
+    # Проверяем, что капчу пытается решить тот, кому она назначена
+    if user_id not in user_data or user_data[user_id]['captcha_message_id'] != callback_query.message.message_id:
+        await bot.answer_callback_query(callback_query.id, text="Эта капча не для вас!")
+        return
+
+    if callback_query.data == '🍎':  # Правильный ответ (Яблоко)
+        await bot.answer_callback_query(callback_query.id, text="Вы успешно прошли капчу!")
+
+        # Добавляем пользователя в базу данных, если капча пройдена
+        add_user_to_db(chat_id, user_id)
+
+        try:
+            await bot.delete_message(chat_id, callback_query.message.message_id)
+            del user_data[user_id]  # Удаляем данные о капче для пользователя
+        except Exception as e:
+            logging.warning(f"Ошибка при удалении сообщения с капчей: {e}")
+
+        welcome_message = await bot.send_message(chat_id, f"Привет, {callback_query.from_user.full_name}! Добро пожаловать в группу!")
+
+        await asyncio.sleep(30)  # Ожидаем 30 секунд перед удалением приветственного сообщения
+        try:
+            await bot.delete_message(chat_id, welcome_message.message_id)
+        except Exception as e:
+            logging.warning(f"Ошибка при удалении приветственного сообщения: {e}")
+    else:
+        await bot.answer_callback_query(callback_query.id, text="Неверный ответ. Вы были забанены.")
+        await bot.ban_chat_member(chat_id, user_id)
+        try:
+            await bot.delete_message(chat_id, callback_query.message.message_id)
+        except Exception as e:
+            logging.warning(f"Ошибка при удалении сообщения с капчей: {e}")
+        del user_data[user_id]
+
+if __name__ == '__main__':
+    init_db()  # Инициализируем базу данных при запуске бота
+    executor.start_polling(dp, skip_updates=False)
