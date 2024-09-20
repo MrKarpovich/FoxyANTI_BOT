@@ -7,6 +7,7 @@ from aiogram.utils import executor
 from datetime import datetime
 import asyncio
 from forbidden_words import FORBIDDEN_WORDS
+import time
 
 
 API_TOKEN = '6892031210:AAHhAMV_NEGM4CbvnwuO-vLBOKrCHACUs50'
@@ -79,14 +80,19 @@ def is_user_in_db(group_id, user_id):
 # Функция логирования действий в группе
 def log_group_activity(action, user=None, chat=None, message=None):
     timestamp = datetime.now().strftime("%d.%m.%Y %H:%M")
-    if user and chat:
+
+    # Логирование сообщения
+    if message:
+        log_message = f"{timestamp} - {action}: {user} написал сообщение '{message}' в чате {chat}"
+    # Логирование действий
+    elif user and chat:
         log_message = f"{timestamp} - {action}: {user} в чате {chat}"
-    elif message:
-        log_message = f"{timestamp} - Сообщение: {message} в чате {chat}"
     else:
         log_message = f"{timestamp} - {action}"
 
+    # Запись в лог
     logging.info(log_message)
+
 
 # Функция для перемешивания кнопок
 def get_random_keyboard():
@@ -162,13 +168,21 @@ async def handle_text_message(message: types.Message):
     # Проверяем наличие запрещенных слов
     if contains_forbidden_words(message_text):
         chat_member = await bot.get_chat_member(message.chat.id, message.from_user.id)
-        if chat_member.status != 'creator':  # Проверяем, не является ли пользователь владельцем чата
+
+        # Проверяем, что пользователь не является администратором
+        if chat_member.status not in ['administrator', 'creator']:
             await bot.ban_chat_member(message.chat.id, message.from_user.id)
-            log_group_activity("Пользователь забанен за использование запрещенных слов", user=user_mention, chat=chat_title)
+            log_group_activity("Пользователь забанен за использование запрещенных слов", user=user_mention,
+                               chat=chat_title)
+        else:
+            logging.info(f"Пользователь {user_mention} является администратором и не может быть забанен.")
+
+        await bot.delete_message(message.chat.id, message.message_id)  # Удаляем сообщение с запрещенными словами
         return
 
     # Логируем текст сообщения
     log_group_activity("Пользователь написал сообщение", user=user_mention, chat=chat_title, message=message_text)
+
 
 # Обработка ответа на капчу
 @dp.callback_query_handler(lambda c: c.data in emoji_buttons.keys())
@@ -195,9 +209,17 @@ async def process_captcha(callback_query: types.CallbackQuery):
         # Отправляем приветственное сообщение
         await bot.send_message(chat_id, f"Добро пожаловать, {callback_query.from_user.full_name}!")
 
-        # log_group_activity("Пользователь прошел капчу", user=callback_query.from_user.full_name, chat=callback_query.message.chat.title)
+        log_group_activity("Пользователь прошел капчу", user=callback_query.from_user.full_name, chat=callback_query.message.chat.title)
 
 # Запуск бота
 if __name__ == '__main__':
-    init_db()
-    executor.start_polling(dp, skip_updates=False)
+    while True:
+        try:
+            init_db()
+            executor.start_polling(dp, skip_updates=False)
+        except asyncio.exceptions.TimeoutError:
+            logging.warning("Проблемы с сетью. Переподключение через 5 секунд...")
+            time.sleep(5)  # Задержка перед повторным запуском
+        except Exception as e:
+            logging.error(f"Бот упал с ошибкой: {e}. Перезапуск через 5 секунд...")
+            time.sleep(5)  # Задержка перед перезапуском
