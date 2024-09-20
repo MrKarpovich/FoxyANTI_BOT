@@ -6,6 +6,8 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils import executor
 from datetime import datetime
 import asyncio
+from forbidden_words import FORBIDDEN_WORDS
+
 
 API_TOKEN = '6892031210:AAHhAMV_NEGM4CbvnwuO-vLBOKrCHACUs50'
 
@@ -37,7 +39,7 @@ def init_db():
     cursor = conn.cursor()
 
     # Создаем таблицу только если ее нет
-    cursor.execute('''
+    cursor.execute('''  
         CREATE TABLE IF NOT EXISTS group_members (
             group_id INTEGER,
             user_id INTEGER,
@@ -52,7 +54,7 @@ def add_user_to_db(group_id, user_id):
     conn = sqlite3.connect('group_members.db')
     cursor = conn.cursor()
 
-    cursor.execute('''
+    cursor.execute('''  
         INSERT OR IGNORE INTO group_members (group_id, user_id)
         VALUES (?, ?)
     ''', (group_id, user_id))
@@ -65,7 +67,7 @@ def is_user_in_db(group_id, user_id):
     conn = sqlite3.connect('group_members.db')
     cursor = conn.cursor()
 
-    cursor.execute('''
+    cursor.execute('''  
         SELECT * FROM group_members WHERE group_id = ? AND user_id = ?
     ''', (group_id, user_id))
 
@@ -73,6 +75,18 @@ def is_user_in_db(group_id, user_id):
     conn.close()
 
     return result is not None
+
+# Функция логирования действий в группе
+def log_group_activity(action, user=None, chat=None, message=None):
+    timestamp = datetime.now().strftime("%d.%m.%Y %H:%M")
+    if user and chat:
+        log_message = f"{timestamp} - {action}: {user} в чате {chat}"
+    elif message:
+        log_message = f"{timestamp} - Сообщение: {message} в чате {chat}"
+    else:
+        log_message = f"{timestamp} - {action}"
+
+    logging.info(log_message)
 
 # Функция для перемешивания кнопок
 def get_random_keyboard():
@@ -85,21 +99,20 @@ def get_random_keyboard():
 # Обработка новых участников
 @dp.message_handler(content_types=types.ContentTypes.NEW_CHAT_MEMBERS)
 async def new_member(message: types.Message):
+    logging.info("Событие NEW_CHAT_MEMBERS сработало")
     chat_id = message.chat.id
     chat_title = message.chat.title if message.chat.title else "Название не указано"
-    current_time = datetime.now().strftime("%d.%m.%Y %H:%M")
-
-    logging.info(
-        f"Чат: {chat_title}, Время: {current_time}, Новый участник в группе: {message.new_chat_members}, (ID чата: {chat_id})"
-    )
 
     for new_member in message.new_chat_members:
+        user_id = new_member.id
+        user_mention = f"[{new_member.full_name}](tg://user?id={user_id})"
+
+        # Логируем действие о новом участнике
+        log_group_activity("Новый участник", user=user_mention, chat=chat_title)
+
         if new_member.id == bot.id:
             await message.reply("Дайте мне права администратора!")
             continue
-
-        user_id = new_member.id
-        user_mention = f"[{new_member.full_name}](tg://user?id={user_id})"
 
         # Проверка, есть ли пользователь в базе данных
         if is_user_in_db(chat_id, user_id):
@@ -111,7 +124,8 @@ async def new_member(message: types.Message):
         try:
             captcha_message = await bot.send_message(
                 chat_id,
-                f"Пользователь {user_mention}, выбери самое полезное из перечисленного: \n(У вас 120 сек или будет бан)",
+                f"Пользователь {user_mention}, выбери самое полезное (фрукт) из перечисленного:"
+                f"\n (У вас 120 сек или будет бан)",
                 reply_markup=keyboard,
                 parse_mode=types.ParseMode.MARKDOWN
             )
@@ -125,8 +139,36 @@ async def new_member(message: types.Message):
                 await bot.ban_chat_member(chat_id, user_id)
                 await bot.delete_message(chat_id, captcha_message.message_id)
                 del user_data[user_id]
+                log_group_activity("Пользователь забанен за неответ на капчу", user=user_mention, chat=chat_title)
         except Exception as e:
             logging.error(f"Ошибка при отправке капчи для пользователя {user_id}: {e}")
+    try:
+        await bot.delete_message(message.chat.id, message.message_id)
+        logging.info(f"Удалено системное сообщение в чате {message.chat.title or 'Название не указано'}")
+    except Exception as e:
+        logging.error(f"Ошибка при удалении системного сообщения: {e}")
+
+# Функция для проверки наличия запрещенных слов в сообщении
+def contains_forbidden_words(message_text):
+    return any(word in message_text.lower() for word in FORBIDDEN_WORDS)
+
+# Обработка сообщения
+@dp.message_handler(content_types=types.ContentTypes.TEXT)
+async def handle_text_message(message: types.Message):
+    user_mention = f"[{message.from_user.full_name}](tg://user?id={message.from_user.id})"
+    chat_title = message.chat.title or "Название не указано"
+    message_text = message.text  # Получаем текст сообщения
+
+    # Проверяем наличие запрещенных слов
+    if contains_forbidden_words(message_text):
+        chat_member = await bot.get_chat_member(message.chat.id, message.from_user.id)
+        if chat_member.status != 'creator':  # Проверяем, не является ли пользователь владельцем чата
+            await bot.ban_chat_member(message.chat.id, message.from_user.id)
+            log_group_activity("Пользователь забанен за использование запрещенных слов", user=user_mention, chat=chat_title)
+        return
+
+    # Логируем текст сообщения
+    log_group_activity("Пользователь написал сообщение", user=user_mention, chat=chat_title, message=message_text)
 
 # Обработка ответа на капчу
 @dp.callback_query_handler(lambda c: c.data in emoji_buttons.keys())
@@ -134,39 +176,28 @@ async def process_captcha(callback_query: types.CallbackQuery):
     user_id = callback_query.from_user.id
     chat_id = callback_query.message.chat.id
 
-    # Проверяем, что капчу пытается решить тот, кому она назначена
-    if user_id not in user_data or user_data[user_id]['captcha_message_id'] != callback_query.message.message_id:
-        await bot.answer_callback_query(callback_query.id, text="Эта капча не для вас!")
-        return
+    # Проверяем, что капча все еще активна
+    if user_id in user_data:
+        correct_answer = callback_query.data
+        correct_item = emoji_buttons[correct_answer]
 
-    if callback_query.data == '🍎':  # Правильный ответ (Яблоко)
-        await bot.answer_callback_query(callback_query.id, text="Вы успешно прошли капчу!")
+        await bot.answer_callback_query(callback_query.id, text=f"Вы выбрали: {correct_item}!", show_alert=True)
 
-        # Добавляем пользователя в базу данных, если капча пройдена
-        add_user_to_db(chat_id, user_id)
+        # Удаляем сообщение с капчей
+        await bot.delete_message(chat_id, user_data[user_id]['captcha_message_id'])
 
-        try:
-            await bot.delete_message(chat_id, callback_query.message.message_id)
-            del user_data[user_id]  # Удаляем данные о капче для пользователя
-        except Exception as e:
-            logging.warning(f"Ошибка при удалении сообщения с капчей: {e}")
-
-        welcome_message = await bot.send_message(chat_id, f"Привет, {callback_query.from_user.full_name}! Добро пожаловать в группу!")
-
-        await asyncio.sleep(30)  # Ожидаем 30 секунд перед удалением приветственного сообщения
-        try:
-            await bot.delete_message(chat_id, welcome_message.message_id)
-        except Exception as e:
-            logging.warning(f"Ошибка при удалении приветственного сообщения: {e}")
-    else:
-        await bot.answer_callback_query(callback_query.id, text="Неверный ответ. Вы были забанены.")
-        await bot.ban_chat_member(chat_id, user_id)
-        try:
-            await bot.delete_message(chat_id, callback_query.message.message_id)
-        except Exception as e:
-            logging.warning(f"Ошибка при удалении сообщения с капчей: {e}")
+        # Убираем пользователя из данных капчи
         del user_data[user_id]
 
+        # Добавляем пользователя в базу данных
+        add_user_to_db(chat_id, user_id)
+
+        # Отправляем приветственное сообщение
+        await bot.send_message(chat_id, f"Добро пожаловать, {callback_query.from_user.full_name}!")
+
+        # log_group_activity("Пользователь прошел капчу", user=callback_query.from_user.full_name, chat=callback_query.message.chat.title)
+
+# Запуск бота
 if __name__ == '__main__':
-    init_db()  # Инициализируем базу данных при запуске бота
+    init_db()
     executor.start_polling(dp, skip_updates=False)
