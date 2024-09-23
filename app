@@ -1,13 +1,16 @@
 import logging
 import random
+import sqlite3
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils import executor
 from datetime import datetime
 import asyncio
+from forbidden_words import FORBIDDEN_WORDS
 import time
 
-API_TOKEN = '-'
+# Токен бота
+API_TOKEN = '6892031210:AAHhAMV_NEGM4CbvnwuO-vLBOKrCHACUs50'
 
 logging.basicConfig(level=logging.INFO)
 
@@ -15,9 +18,7 @@ bot = Bot(token=API_TOKEN)
 dp = Dispatcher(bot)
 
 CAPTCHA_TIMEOUT = 120  # Время на решение капчи (в секундах)
-user_data = {}  # Хранит данные пользователей, статус капчи и ID сообщений
-user_passed = {}  # Отслеживает пользователей, прошедших капчу
-
+user_data = {}  # Хранение данных о капче для каждого пользователя
 emoji_buttons = {
     '🍎': 'Яблоко',
     '🍕': 'Пицца',
@@ -33,159 +34,271 @@ emoji_buttons = {
     '🥨': 'Соленые палочки',
 }
 
-# Функция для перемешивания кнопок
+# Инициализация базы данных group_members
+def init_group_db():
+    try:
+        conn = sqlite3.connect('group_members.db')
+        cursor = conn.cursor()
+        cursor.execute('''  
+            CREATE TABLE IF NOT EXISTS group_members (
+                group_id INTEGER,
+                user_id INTEGER,
+                PRIMARY KEY (group_id, user_id)
+            )
+        ''')
+        conn.commit()
+        conn.close()
+        logging.info("База данных group_members.db успешно инициализирована.")
+    except Exception as e:
+        logging.error(f"Ошибка при инициализации базы данных group_members: {e}")
+
+# Инициализация базы данных good_users
+def init_good_users_db():
+    try:
+        conn = sqlite3.connect('good_users.db')
+        cursor = conn.cursor()
+        cursor.execute('''  
+            CREATE TABLE IF NOT EXISTS good_users (
+                group_id INTEGER,
+                user_id INTEGER,
+                PRIMARY KEY (group_id, user_id)
+            )
+        ''')
+        conn.commit()
+        conn.close()
+        logging.info("База данных good_users.db успешно инициализирована.")
+    except Exception as e:
+        logging.error(f"Ошибка при инициализации базы данных good_users: {e}")
+
+# Добавление пользователя в базу данных group_members
+def add_user_to_db(group_id, user_id):
+    try:
+        conn = sqlite3.connect('group_members.db')
+        cursor = conn.cursor()
+        cursor.execute('''  
+            INSERT OR IGNORE INTO group_members (group_id, user_id)
+            VALUES (?, ?)
+        ''', (group_id, user_id))
+        conn.commit()
+        conn.close()
+        logging.info(f"Пользователь {user_id} успешно добавлен в базу данных group_members.")
+    except Exception as e:
+        logging.error(f"Ошибка при добавлении пользователя в базу данных group_members: {e}")
+
+# Добавление пользователя в базу данных good_users
+def add_good_user_to_db(group_id, user_id):
+    try:
+        conn = sqlite3.connect('good_users.db')
+        cursor = conn.cursor()
+        cursor.execute('''  
+            INSERT OR IGNORE INTO good_users (group_id, user_id)
+            VALUES (?, ?)
+        ''', (group_id, user_id))
+        conn.commit()
+        conn.close()
+        logging.info(f"Пользователь {user_id} успешно добавлен в базу данных good_users.")
+    except Exception as e:
+        logging.error(f"Ошибка при добавлении пользователя в базу данных good_users: {e}")
+
+# Проверка, находится ли пользователь в базе данных group_members
+def is_user_in_group_db(group_id, user_id):
+    try:
+        conn = sqlite3.connect('group_members.db')
+        cursor = conn.cursor()
+        cursor.execute('''  
+            SELECT * FROM group_members WHERE group_id = ? AND user_id = ?
+        ''', (group_id, user_id))
+        result = cursor.fetchone()
+        conn.close()
+        return result is not None
+    except Exception as e:
+        logging.error(f"Ошибка при проверке пользователя в базе данных group_members: {e}")
+        return False
+
+# Проверка, находится ли пользователь в базе данных good_users
+def is_user_in_good_users_db(group_id, user_id):
+    try:
+        conn = sqlite3.connect('good_users.db')
+        cursor = conn.cursor()
+        cursor.execute('''  
+            SELECT * FROM good_users WHERE group_id = ? AND user_id = ?
+        ''', (group_id, user_id))
+        result = cursor.fetchone()
+        conn.close()
+        return result is not None
+    except Exception as e:
+        logging.error(f"Ошибка при проверке пользователя в базе данных good_users: {e}")
+        return False
+
+# Функция логирования действий в группе
+def log_group_activity(action, user=None, chat=None, message=None):
+    timestamp = datetime.now().strftime("%d.%m.%Y %H:%M")
+
+    # Логирование сообщения
+    if message:
+        log_message = f"{timestamp} - {action}: {user} написал сообщение '{message}' в чате {chat}"
+    # Логирование действий
+    elif user and chat:
+        log_message = f"{timestamp} - {action}: {user} в чате {chat}"
+    else:
+        log_message = f"{timestamp} - {action}"
+
+    # Запись в лог
+    logging.info(log_message)
+
+# Функция для перемешивания кнопок капчи
 def get_random_keyboard():
     keyboard = InlineKeyboardMarkup(row_width=3)
     buttons = [InlineKeyboardButton(text=emoji, callback_data=emoji) for emoji in emoji_buttons.keys()]
-    random.shuffle(buttons)  # Перемешиваем список кнопок
+    random.shuffle(buttons)
     keyboard.add(*buttons)
     return keyboard
 
-# Функция для отправки капчи новому участнику
+# Функция для проверки наличия запрещенных слов в сообщении
+def contains_forbidden_words(message_text):
+    return any(word in message_text.lower() for word in FORBIDDEN_WORDS)
+
+# Обработка новых участников
 @dp.message_handler(content_types=types.ContentTypes.NEW_CHAT_MEMBERS)
 async def new_member(message: types.Message):
     chat_id = message.chat.id
-    logging.info(f"Новый участник в группе: {message.new_chat_members}")
+    chat_title = message.chat.title if message.chat.title else "Название не указано"
+
     for new_member in message.new_chat_members:
+        user_id = new_member.id
+        user_mention = f"[{new_member.full_name}](tg://user?id={user_id})"
+
+        # Логируем действие о новом участнике
+        log_group_activity("Новый участник", user=user_mention, chat=chat_title)
+
         if new_member.id == bot.id:
             await message.reply("Дайте мне права администратора!")
             continue
 
-        user_id = new_member.id
-        user_mention = f"[{new_member.full_name}](tg://user?id={user_id})"
+        # Проверка, есть ли пользователь в базе данных group_members
+        if is_user_in_group_db(chat_id, user_id):
+            logging.info(f"Пользователь {user_mention} уже находится в базе данных group_members.")
+            continue
 
-        keyboard = get_random_keyboard()  # Генерируем перемешанные кнопки
+        keyboard = get_random_keyboard()
 
-        # Если пользователь повторно заходит, удаляем старую капчу
-        if user_id in user_data:
-            await bot.delete_message(chat_id, user_data[user_id]['message_id'])
-            del user_data[user_id]
-
-        # Если пользователь уже проходил капчу, убираем его из user_passed
-        if user_id in user_passed:
-            del user_passed[user_id]
-
-        # Сохраняем данные о пользователе и отправляем капчу
-        user_data[user_id] = {'captcha': True, 'time': datetime.now(), 'chat_id': chat_id, 'message_id': None}
         try:
             captcha_message = await bot.send_message(
                 chat_id,
-                f"Пользователь {user_mention}, выбери самое полезное из перечисленного: \n(У вас 120 сек или будет бан)",
+                f"Пользователь {user_mention}, выбери самое полезное (фрукт) из перечисленного:"
+                f"\n (У вас 120 сек или будет бан)",
                 reply_markup=keyboard,
                 parse_mode=types.ParseMode.MARKDOWN
             )
-            user_data[user_id]['message_id'] = captcha_message.message_id
-        except Exception as e:
-            logging.error(f"Ошибка при отправке сообщения с капчей для пользователя {user_id}: {e}")
 
-# Обработка ответа на капчу
+            # Сохраняем данные о капче для данного пользователя
+            user_data[user_id] = {'captcha_message_id': captcha_message.message_id, 'chat_id': chat_id}
+
+            # Фоновая задача для бана по истечении времени
+            await asyncio.sleep(CAPTCHA_TIMEOUT)
+            if user_id in user_data:
+                await bot.ban_chat_member(chat_id, user_id)
+                await bot.delete_message(chat_id, captcha_message.message_id)
+                del user_data[user_id]
+                log_group_activity("Пользователь забанен за неответ на капчу", user=user_mention, chat=chat_title)
+        except Exception as e:
+            logging.error(f"Ошибка при отправке капчи для пользователя {user_id}: {e}")
+    try:
+        await bot.delete_message(message.chat.id, message.message_id)
+        logging.info(f"Сообщение о новом участнике успешно удалено.")
+    except Exception as e:
+        logging.error(f"Ошибка при удалении сообщения о новом участнике: {e}")
+
+# Обработка команды /save для добавления пользователя в список "хороших"
+@dp.message_handler(commands=['save'])
+async def save_user(message: types.Message):
+    chat_id = message.chat.id
+    user_id = message.from_user.id
+    is_admin = (await bot.get_chat_member(chat_id, user_id)).status in ["administrator", "creator"]
+
+    if not is_admin:
+        await message.reply("Только администраторы могут добавлять пользователей в список 'хороших'.")
+        return
+
+    if message.reply_to_message:
+        good_user_id = message.reply_to_message.from_user.id
+        if not is_user_in_good_users_db(chat_id, good_user_id):
+            add_good_user_to_db(chat_id, good_user_id)
+            await message.reply(f"Пользователь {message.reply_to_message.from_user.full_name} добавлен в список 'хороших'.")
+            log_group_activity("Пользователь добавлен в список 'хороших'", user=message.reply_to_message.from_user.full_name, chat=message.chat.title)
+        else:
+            await message.reply(f"Пользователь {message.reply_to_message.from_user.full_name} уже находится в списке 'хороших'.")
+    else:
+        await message.reply("Эту команду нужно использовать в ответ на сообщение пользователя.")
+
+# Обработка сообщения
+@dp.message_handler(content_types=types.ContentTypes.TEXT)
+async def handle_text_message(message: types.Message):
+    user_id = message.from_user.id
+    chat_id = message.chat.id
+    user_mention = f"[{message.from_user.full_name}](tg://user?id={user_id})"
+    chat_title = message.chat.title or "Название не указано"
+    message_text = message.text  # Получаем текст сообщения
+
+    # Проверяем наличие запрещенных слов
+    if contains_forbidden_words(message_text):
+        chat_member = await bot.get_chat_member(chat_id, user_id)
+
+        # Если пользователь в списке "хороших", просто удаляем сообщение без бана
+        if is_user_in_good_users_db(chat_id, user_id):
+            logging.info(f"Пользователь {user_mention} находится в списке 'хороших', удаляем сообщение с запрещенными словами, но не баним.")
+            await bot.delete_message(chat_id, message.message_id)
+            return
+
+        # Проверяем, что пользователь не является администратором
+        if chat_member.status not in ['administrator', 'creator']:
+            await bot.ban_chat_member(chat_id, user_id)
+            log_group_activity("Пользователь забанен за использование запрещенных слов", user=user_mention, chat=chat_title)
+        else:
+            logging.info(f"Пользователь {user_mention} является администратором и не может быть забанен.")
+
+        await bot.delete_message(chat_id, message.message_id)  # Удаляем сообщение с запрещенными словами
+        return
+
+    # Логируем текст сообщения
+    log_group_activity("Пользователь написал сообщение", user=user_mention, chat=chat_title, message=message_text)
+
+
+# Обработка нажатий на кнопки капчи
 @dp.callback_query_handler(lambda c: c.data in emoji_buttons.keys())
-async def process_captcha(callback_query: types.CallbackQuery):
+async def handle_captcha_answer(callback_query: types.CallbackQuery):
     user_id = callback_query.from_user.id
+    chat_id = callback_query.message.chat.id
+    selected_answer = callback_query.data
 
     if user_id in user_data:
-        captcha_data = user_data[user_id]
-        if captcha_data.get('captcha'):
-            if (datetime.now() - captcha_data['time']).total_seconds() <= CAPTCHA_TIMEOUT:
-                if callback_query.message.message_id == captcha_data['message_id']:
-                    if callback_query.data == '🍎':  # Правильный ответ (Яблоко)
-                        await bot.answer_callback_query(callback_query.id, text="Вы успешно прошли капчу!")
-                        chat_id = captcha_data['chat_id']
+        captcha_message_id = user_data[user_id]['captcha_message_id']
+        if selected_answer == '🍎':  # Правильный ответ: яблоко
+            await bot.delete_message(chat_id, captcha_message_id)  # Удаляем сообщение капчи
 
-                        # Сначала отмечаем пользователя как прошедшего капчу
-                        user_passed[user_id] = True
-                        del user_data[user_id]  # Убираем пользователя из списка ожидающих
-
-                        try:
-                            await bot.delete_message(chat_id, captcha_data['message_id'])  # Удаляем сообщение с капчей
-                        except Exception as e:
-                            logging.warning(f"Ошибка при удалении сообщения с капчей: {e}")
-
-                        # Отправляем приветственное сообщение
-                        welcome_message = await bot.send_message(chat_id,
-                                                                 f"Привет, {callback_query.from_user.full_name}! Добро пожаловать в группу!")
-
-                        # Ожидаем 30 секунд перед удалением приветственного сообщения
-                        await asyncio.sleep(30)
-                        await bot.delete_message(chat_id, welcome_message.message_id)
-                    else:
-                        await bot.answer_callback_query(callback_query.id, text="Неверный ответ. Вы были забанены.")
-                        await ban_user(callback_query.message.chat.id, user_id)
-                else:
-                    await bot.answer_callback_query(callback_query.id, text="Вы не можете проходить эту капчу.")
-            else:
-                await bot.answer_callback_query(callback_query.id, text="Время на ответ истекло.")
-                await ban_user(callback_query.message.chat.id, user_id)
+            await bot.send_message(chat_id, f"Пользователь {callback_query.from_user.full_name} успешно прошел капчу.")
+            add_user_to_db(chat_id, user_id)  # Добавляем пользователя в список участников группы
+            log_group_activity("Пользователь прошел капчу", user=callback_query.from_user.full_name, chat=callback_query.message.chat.title)
         else:
-            await bot.answer_callback_query(callback_query.id, text="Вы не видели капчу.")
+            await bot.ban_chat_member(chat_id, user_id)  # Баним за неправильный ответ
+            await bot.delete_message(chat_id, captcha_message_id)  # Удаляем сообщение капчи
+            log_group_activity("Пользователь забанен за неправильный ответ на капчу", user=callback_query.from_user.full_name, chat=callback_query.message.chat.title)
+
+        # Удаляем данные о пользователе после проверки
+        del user_data[user_id]
     else:
-        await bot.answer_callback_query(callback_query.id, text="Вы не можете проходить эту капчу.")
+        await callback_query.answer("Время на решение капчи истекло или вы уже прошли проверку.")
 
-
-# Бан пользователя и удаление сообщений
-async def ban_user(chat_id, user_id):
-    try:
-        await bot.ban_chat_member(chat_id, user_id)
-        if user_id in user_data:
-            try:
-                await bot.delete_message(chat_id, user_data[user_id]['message_id'])
-            except Exception as e:
-                logging.warning(f"Ошибка при удалении сообщения с капчей: {e}")
-            del user_data[user_id]
-    except Exception as e:
-        logging.error(f"Ошибка при бане пользователя {user_id}: {e}")
-
-# Удаление сообщений от пользователей, не прошедших капчу
-@dp.message_handler()
-async def delete_messages_from_unverified_users(message: types.Message):
-    user_id = message.from_user.id
-
-    if user_id in user_data and user_id not in user_passed:
-        try:
-            await bot.delete_message(message.chat.id, message.message_id)
-        except Exception as e:
-            logging.error(f"Ошибка при удалении сообщения от пользователя {user_id}: {e}")
-    else:
-        pass
-
-# Удаление сообщений о выходе из группы
-@dp.message_handler(content_types=types.ContentTypes.LEFT_CHAT_MEMBER)
-async def member_left(message: types.Message):
-    try:
-        await bot.delete_message(message.chat.id, message.message_id)
-    except Exception as e:
-        logging.error(f"Ошибка при удалении сообщения о выходе: {e}")
-
-# Удаление обновлений фото группы
-@dp.message_handler(content_types=types.ContentTypes.NEW_CHAT_PHOTO)
-async def chat_photo_changed(message: types.Message):
-    try:
-        await bot.delete_message(message.chat.id, message.message_id)
-    except Exception as e:
-        logging.error(f"Ошибка при удалении сообщения о смене фото: {e}")
-
-# Удаление обновлений названия группы
-@dp.message_handler(content_types=types.ContentTypes.NEW_CHAT_TITLE)
-async def chat_title_changed(message: types.Message):
-    try:
-        await bot.delete_message(message.chat.id, message.message_id)
-    except Exception as e:
-        logging.error(f"Ошибка при удалении сообщения о смене названия: {e}")
-
-# Фоновая задача для проверки таймаутов капчи
-async def check_timeouts():
-    while True:
-        current_time = datetime.now()
-        for user_id, data in list(user_data.items()):
-            if data['captcha'] and (current_time - data['time']).total_seconds() > CAPTCHA_TIMEOUT:
-                await ban_user(data.get('chat_id'), user_id)
-        await asyncio.sleep(60)
-
+# Запуск бота
 if __name__ == '__main__':
-    try:
-        loop = asyncio.get_event_loop()
-        loop.create_task(check_timeouts())
-        executor.start_polling(dp, skip_updates=False)
-    except Exception as e:
-        logging.error(f"Ошибка при запуске бота: {e}")
-        time.sleep(5)
+    init_group_db()  # Создаем таблицу для участников группы
+    init_good_users_db()  # Создаем таблицу для хороших пользователей
+    while True:
+        try:
+            executor.start_polling(dp, skip_updates=False)
+        except asyncio.exceptions.TimeoutError:
+            logging.warning("Проблемы с сетью. Переподключение через 5 секунд...")
+            time.sleep(5)  # Задержка перед повторным запуском
+        except Exception as e:
+            logging.error(f"Бот упал с ошибкой: {e}. Перезапуск через 5 секунд...")
+            time.sleep(5)  # Задержка перед перезапуском
