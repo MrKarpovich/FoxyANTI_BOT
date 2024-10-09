@@ -10,7 +10,7 @@ from forbidden_words import FORBIDDEN_WORDS
 import time
 
 # Токен бота
-API_TOKEN = '-'
+API_TOKEN = '6892031210:AAHhAMV_NEGM4CbvnwuO-vLBOKrCHACUs50'
 
 logging.basicConfig(level=logging.INFO)
 
@@ -22,6 +22,7 @@ user_data = {}  # Хранение данных о капче для каждо�
 emoji_buttons = {
     '🍎': 'Яблоко',
     '🍕': 'Пицца',
+    '🍐': 'Груша',
     '🍔': 'Гамбургер',
     '🍟': 'Картошка фри',
     '🌭': 'Хот-дог',
@@ -32,6 +33,7 @@ emoji_buttons = {
     '🍭': 'Леденец',
     '🥤': 'Кола',
     '🥨': 'Соленые палочки',
+    '💡': 'Лампочка',  # Добавляем лампочку
 }
 
 # Инициализация базы данных group_members
@@ -155,8 +157,95 @@ def get_random_keyboard():
     return keyboard
 
 # Функция для проверки наличия запрещенных слов в сообщении
+import re
+from fuzzywuzzy import fuzz
+
 def contains_forbidden_words(message_text):
-    return any(word in message_text.lower() for word in FORBIDDEN_WORDS)
+    # Функция для нормализации текста
+    def normalize_text(text):
+        # Словарь замен латинских символов на кириллические
+        replacements = {
+            'a': 'а',
+            'b': 'б',
+            'c': 'ц',
+            'd': 'д',
+            'e': 'е',
+            'f': 'ф',
+            'g': 'г',
+            'h': 'х',
+            'i': 'и',
+            'j': 'й',
+            'k': 'к',
+            'l': 'л',
+            'm': 'м',
+            'n': 'н',
+            'o': 'о',
+            'p': 'р',
+            'q': 'к',
+            'r': 'р',
+            's': 'с',
+            't': 'т',
+            'u': 'у',
+            'v': 'в',
+            'w': 'в',
+            'x': 'кс',
+            'y': 'и',
+            'z': 'з',
+
+            'A': 'А',
+            'B': 'Б',
+            'C': 'Ц',
+            'D': 'Д',
+            'E': 'Е',
+            'F': 'Ф',
+            'G': 'Г',
+            'H': 'Х',
+            'I': 'И',
+            'J': 'Й',
+            'K': 'К',
+            'L': 'Л',
+            'M': 'М',
+            'N': 'Н',
+            'O': 'О',
+            'P': 'Р',
+            'Q': 'К',
+            'R': 'Р',
+            'S': 'С',
+            'T': 'Т',
+            'U': 'У',
+            'V': 'В',
+            'W': 'В',
+            'X': 'Кс',
+            'Y': 'И',
+            'Z': 'З',
+        }
+
+        # Заменяем латинские символы на кириллические
+        for key, value in replacements.items():
+            text = text.replace(key, value)
+
+        # Убираем специальные символы и форматирование
+        text = re.sub(r'[*_~\\^]', '', text)  # Удаляем символы форматирования
+        text = re.sub(r'[\n\r\t]', ' ', text)  # Убираем переносы строк и табуляции
+        text = re.sub(r'[^а-яА-ЯёЁ\s]', '', text)  # Оставляем только кириллические буквы и пробелы
+        text = re.sub(r'\s+', ' ', text)  # Удаляем лишние пробелы
+
+        return text.lower().strip()
+
+    # Нормализуем входное сообщение
+    normalized_text = normalize_text(message_text)
+
+    # Проверка на наличие запрещённых слов в исходном виде
+    if any(word in normalized_text for word in FORBIDDEN_WORDS):
+        return True
+
+    # Проверка на схожесть с запрещёнными словами
+    for forbidden_word in FORBIDDEN_WORDS:
+        if fuzz.ratio(normalized_text, forbidden_word) > 80:  # Порог схожести 80%
+            return True
+
+    return False
+
 
 # Обработка новых участников
 @dp.message_handler(content_types=types.ContentTypes.NEW_CHAT_MEMBERS)
@@ -185,7 +274,7 @@ async def new_member(message: types.Message):
         try:
             captcha_message = await bot.send_message(
                 chat_id,
-                f"Пользователь {user_mention}, выбери самое полезное (фрукт) из перечисленного:"
+                f"Пользователь {user_mention}, 'Висит груша, нельзя скушать'. Выберите правильный ответ:"
                 f"\n (У вас 120 сек или будет бан)",
                 reply_markup=keyboard,
                 parse_mode=types.ParseMode.MARKDOWN
@@ -273,7 +362,7 @@ async def handle_captcha_answer(callback_query: types.CallbackQuery):
 
     if user_id in user_data:
         captcha_message_id = user_data[user_id]['captcha_message_id']
-        if selected_answer == '🍎':  # Правильный ответ: яблоко
+        if selected_answer == '💡':  # Правильный ответ: яблоко
             await bot.delete_message(chat_id, captcha_message_id)  # Удаляем сообщение капчи
 
             await bot.send_message(chat_id, f"Пользователь {callback_query.from_user.full_name} успешно прошел капчу.")
