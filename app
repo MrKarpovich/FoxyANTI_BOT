@@ -247,6 +247,21 @@ def contains_forbidden_words(message_text):
     return False
 
 
+# Обработка заявок на вступление в закрытую группу
+@dp.chat_join_request_handler()
+async def handle_join_request(join_request: types.ChatJoinRequest):
+    chat_id = join_request.chat.id
+    user_id = join_request.from_user.id
+    user_mention = f"[{join_request.from_user.full_name}](tg://user?id={user_id})"
+    
+    try:
+        # Подтверждаем заявку пользователя
+        await bot.approve_chat_join_request(chat_id=chat_id, user_id=user_id)
+        logging.info(f"Заявка пользователя {user_mention} на вступление в группу {chat_id} одобрена.")
+    except Exception as e:
+        logging.error(f"Ошибка при одобрении заявки пользователя {user_id} на вступление: {e}")
+
+
 # Обработка новых участников
 @dp.message_handler(content_types=types.ContentTypes.NEW_CHAT_MEMBERS)
 async def new_member(message: types.Message):
@@ -329,28 +344,28 @@ async def handle_text_message(message: types.Message):
     chat_title = message.chat.title or "Название не указано"
     message_text = message.text  # Получаем текст сообщения
 
+    # Проверка, является ли пользователь "хорошим"
+    if is_user_in_good_users_db(chat_id, user_id):
+        logging.info(f"Сообщение от 'хорошего' пользователя {user_mention} не будет проверяться на запрещенные слова.")
+        return  # Пропускаем сообщение от "хороших" пользователей
+
     # Проверяем наличие запрещенных слов
     if contains_forbidden_words(message_text):
         chat_member = await bot.get_chat_member(chat_id, user_id)
-
-        # Если пользователь в списке "хороших", просто удаляем сообщение без бана
-        if is_user_in_good_users_db(chat_id, user_id):
-            logging.info(f"Пользователь {user_mention} находится в списке 'хороших', удаляем сообщение с запрещенными словами, но не баним.")
-            await bot.delete_message(chat_id, message.message_id)
-            return
 
         # Проверяем, что пользователь не является администратором
         if chat_member.status not in ['administrator', 'creator']:
             await bot.ban_chat_member(chat_id, user_id)
             log_group_activity("Пользователь забанен за использование запрещенных слов", user=user_mention, chat=chat_title)
+            await bot.delete_message(chat_id, message.message_id)  # Удаляем сообщение с запрещенными словами
         else:
             logging.info(f"Пользователь {user_mention} является администратором и не может быть забанен.")
 
-        await bot.delete_message(chat_id, message.message_id)  # Удаляем сообщение с запрещенными словами
         return
 
     # Логируем текст сообщения
     log_group_activity("Пользователь написал сообщение", user=user_mention, chat=chat_title, message=message_text)
+
 
 
 # Обработка нажатий на кнопки капчи
