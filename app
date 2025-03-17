@@ -10,7 +10,7 @@ from forbidden_words import FORBIDDEN_WORDS
 import time
 
 # Токен бота
-API_TOKEN = '6892031210:AAHhAMV_NEGM4CbvnwuO-vLBOKrCHACUs50'
+API_TOKEN = '-'
 
 logging.basicConfig(level=logging.INFO)
 
